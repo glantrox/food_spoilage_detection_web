@@ -20,7 +20,7 @@ from sklearn.metrics import confusion_matrix
 from sklearn.ensemble import RandomForestClassifier
 
 # 1. Load Data (robust path + graceful fallback)
-model_ready = Fa
+model_ready = False
 rf = None
 imputer = None
 feature_names = ['MQ4A', 'MQ3A', 'MQ8A', 'MQ135A', 'MQ9A', 'MQ2A']

@@ -175,7 +175,7 @@ export default function App() {
 
     return {
       status: isSpoiled ? 'SPOILED' : 'FRESH',
-      label: isSpoiled ? 'BUSUK (Prediksi Backend)' : 'SEGAR (Prediksi Backend)',
+      label: isSpoiled ? 'BUSUK ' : 'SEGAR',
       confidence: conf.toFixed(2),
       details: isSpoiled
         ? 'Prediksi backend mendeteksi pembusukan pada sampel saat ini.'
@@ -238,14 +238,32 @@ export default function App() {
   // Removed manual inject: data is provided to backend directly via classify
 
   const generateRandomManual = () => {
-    setManualInput({
-      mq3: Math.floor(Math.random() * 500),
-      mq4: Math.floor(Math.random() * 400),
-      mq8: Math.floor(Math.random() * 300),
-      mq135: Math.floor(Math.random() * 600),
-      mq2: Math.floor(Math.random() * 200),
-      mq9: Math.floor(Math.random() * 250),
-    });
+    const rand = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
+    
+    // 50% chance for Fresh vs Spoiled profile to ensure realistic combinations
+    const isFresh = Math.random() > 0.5;
+
+    if (isFresh) {
+      // Fresh Profile (Based on Class 0 stats)
+      setManualInput({
+        mq3: rand(710, 730),   // High Alcohol for Fresh in this dataset
+        mq4: rand(370, 420),   // Low Methane
+        mq8: rand(480, 515),   // Low Hydrogen
+        mq135: rand(180, 230), // Low Air Quality index
+        mq9: rand(125, 205),   // Low CO
+        mq2: rand(200, 240),   // Low Propane
+      });
+    } else {
+      // Spoiled Profile (Based on Class 1 stats)
+      setManualInput({
+        mq3: rand(560, 690),   // Lower Alcohol for Spoiled
+        mq4: rand(430, 600),   // High Methane
+        mq8: rand(500, 700),   // High Hydrogen
+        mq135: rand(220, 400), // High Air Quality index
+        mq9: rand(130, 270),   // High CO
+        mq2: rand(210, 330),   // High Propane
+      });
+    }
   };
 
   const classifyWithBackend = async () => {
@@ -423,7 +441,7 @@ export default function App() {
                   <i className="fa-solid fa-shuffle mr-1"></i> Rnd
                 </button>
                 <button onClick={classifyWithBackend} disabled={loadingClassify} className={`flex-1 ${loadingClassify ? 'bg-slate-700 text-slate-400' : 'bg-emerald-600 hover:bg-emerald-500'} text-xs py-1 rounded text-white font-bold`}>
-                  {loadingClassify ? 'CLASSIFYING…' : 'CLASSIFY VIA BACKEND'}
+                  {loadingClassify ? 'CLASSIFYING…' : 'CLASSIFY'}
                 </button>
               </div>
               {(classifyError || backendResult) && (
