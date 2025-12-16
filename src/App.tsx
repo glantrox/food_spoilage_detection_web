@@ -7,6 +7,8 @@ interface SensorData {
   mq4: number;
   mq8: number;
   mq135: number;
+  mq2: number;   // Propane
+  mq9: number;   // CO
 }
 
 interface HistoryData extends SensorData {
@@ -31,6 +33,34 @@ interface ManualInputState {
   mq4: string | number;
   mq8: string | number;
   mq135: string | number;
+  mq2: string | number;
+  mq9: string | number;
+}
+
+interface BackendResult {
+  ok: boolean;
+  prediction?: string;
+  probabilities?: Record<string, number> | null;
+  expected_features?: string[];
+  received_keys?: string[];
+  error?: string;
+}
+
+interface TrainMetrics {
+  train_score: number;
+  test_score: number;
+  noisy_score: number;
+}
+
+interface TrainResponse {
+  ok: boolean;
+  model_ready: boolean;
+  metrics?: TrainMetrics;
+  classes?: string[];
+  feature_names?: string[];
+  samples?: { train: number; test: number };
+  report?: Record<string, any>;
+  error?: string;
 }
 
 // --- Komponen Gauge Sederhana ---
@@ -81,14 +111,23 @@ export default function App() {
     mq3: 45,
     mq4: 200,
     mq8: 150,
-    mq135: 300
+    mq135: 300,
+    mq2: 80,
+    mq9: 120,
   });
 
   const [dataHistory, setDataHistory] = useState<HistoryData[]>([]);
 
   const [manualInput, setManualInput] = useState<ManualInputState>({
-    mq3: '', mq4: '', mq8: '', mq135: ''
+    mq3: '', mq4: '', mq8: '', mq135: '', mq2: '', mq9: ''
   });
+
+  const [backendResult, setBackendResult] = useState<BackendResult | null>(null);
+  const [loadingClassify, setLoadingClassify] = useState(false);
+  const [classifyError, setClassifyError] = useState<string | null>(null);
+  const [trainingLoading, setTrainingLoading] = useState(false);
+  const [trainingError, setTrainingError] = useState<string | null>(null);
+  const [trainingResp, setTrainingResp] = useState<TrainResponse | null>(null);
 
   // Load FontAwesome
   useEffect(() => {
@@ -116,7 +155,35 @@ export default function App() {
     };
   };
 
-  const verdict = getVerdict(sensorData);
+  const backendToVerdict = (res: BackendResult): Verdict => {
+    // Decide predicted class
+    let pred = res.prediction ?? '';
+    if ((!pred || pred === '') && res.probabilities) {
+      const top = Object.entries(res.probabilities).sort((a, b) => b[1] - a[1])[0];
+      if (top) pred = String(top[0]);
+    }
+
+    // Map label to status; assumption: 1 = SPOILED, 0 = FRESH
+    const normalized = String(pred).toLowerCase();
+    const isSpoiled = normalized === '1' || normalized === 'spoiled' || normalized === 'busuk';
+
+    // Confidence from probabilities if available
+    let conf = 95;
+    if (res.probabilities && pred in res.probabilities) {
+      conf = Math.max(0, Math.min(100, res.probabilities[pred] * 100));
+    }
+
+    return {
+      status: isSpoiled ? 'SPOILED' : 'FRESH',
+      label: isSpoiled ? 'BUSUK (Prediksi Backend)' : 'SEGAR (Prediksi Backend)',
+      confidence: conf.toFixed(2),
+      details: isSpoiled
+        ? 'Prediksi backend mendeteksi pembusukan pada sampel saat ini.'
+        : 'Prediksi backend menunjukkan sampel masih segar.'
+    };
+  };
+
+  const verdict = backendResult?.ok ? backendToVerdict(backendResult) : getVerdict(sensorData);
 
   useEffect(() => {
     let interval: ReturnType<typeof setInterval>;
@@ -139,12 +206,16 @@ export default function App() {
           const newMQ4 = Math.max(0, 200 + (Math.random() * 20 - 10));
           const newMQ8 = Math.max(0, 150 + (Math.random() * 15 - 7.5));
           const newMQ135 = Math.max(0, 300 + (Math.random() * 30 - 15));
+          const newMQ2 = Math.max(0, 80 + (Math.random() * 10 - 5));
+          const newMQ9 = Math.max(0, 120 + (Math.random() * 12 - 6));
 
           return {
             mq3: newMQ3,
             mq4: newMQ4,
             mq8: newMQ8,
-            mq135: newMQ135
+            mq135: newMQ135,
+            mq2: newMQ2,
+            mq9: newMQ9
           };
         });
       }, 800);
@@ -164,16 +235,7 @@ export default function App() {
     });
   }, [sensorData]);
 
-  const handleManualInject = () => {
-    setDataSource('manual');
-    setIsConnected(false);
-    setSensorData({
-      mq3: Number(manualInput.mq3) || 0,
-      mq4: Number(manualInput.mq4) || 0,
-      mq8: Number(manualInput.mq8) || 0,
-      mq135: Number(manualInput.mq135) || 0,
-    });
-  };
+  // Removed manual inject: data is provided to backend directly via classify
 
   const generateRandomManual = () => {
     setManualInput({
@@ -181,7 +243,68 @@ export default function App() {
       mq4: Math.floor(Math.random() * 400),
       mq8: Math.floor(Math.random() * 300),
       mq135: Math.floor(Math.random() * 600),
+      mq2: Math.floor(Math.random() * 200),
+      mq9: Math.floor(Math.random() * 250),
     });
+  };
+
+  const classifyWithBackend = async () => {
+    try {
+      setLoadingClassify(true);
+      setClassifyError(null);
+      setBackendResult(null);
+
+      // Map current sensorData to backend payload keys
+      const pick = (v: string | number, fallback: number) => {
+        const n = Number(v);
+        return Number.isFinite(n) && !Number.isNaN(n) ? n : fallback;
+      };
+
+      // Prefer manual inputs if provided; fallback to existing sensorData
+      const payload = {
+        MQ4A: pick(manualInput.mq4, sensorData.mq4),     // Methane
+        MQ3A: pick(manualInput.mq3, sensorData.mq3),     // Alcohol
+        MQ8A: pick(manualInput.mq8, sensorData.mq8),     // Hydrogen
+        MQ135A: pick(manualInput.mq135, sensorData.mq135), // Air Quality
+        MQ9A: pick(manualInput.mq9, sensorData.mq9),     // Carbon Monoxide
+        MQ2A: pick(manualInput.mq2, sensorData.mq2)      // Propane
+      };
+
+      const resp = await fetch('/api/classify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      const json: BackendResult = await resp.json();
+      if (!resp.ok || !json.ok) {
+        throw new Error(json.error || `HTTP ${resp.status}`);
+      }
+      setBackendResult(json);
+    } catch (err: any) {
+      setClassifyError(err?.message || 'Failed to classify');
+    } finally {
+      setLoadingClassify(false);
+    }
+  };
+
+  const trainModelWithBackend = async () => {
+    try {
+      setTrainingLoading(true);
+      setTrainingError(null);
+      setTrainingResp(null);
+
+      const resp = await fetch('/api/train', { method: 'POST' });
+      const json: TrainResponse = await resp.json();
+      if (!resp.ok || !json.ok) {
+        throw new Error(json.error || `HTTP ${resp.status}`);
+      }
+      setTrainingResp(json);
+    } catch (err: any) {
+      setTrainingError(err?.message || 'Failed to train');
+    } finally {
+      setTrainingLoading(false);
+    }
   };
 
   return (
@@ -286,15 +409,101 @@ export default function App() {
                   <label className="text-[10px] text-slate-400">MQ135 (Air)</label>
                   <input type="number" value={manualInput.mq135} onChange={e => setManualInput({ ...manualInput, mq135: e.target.value })} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white" />
                 </div>
+                <div>
+                  <label className="text-[10px] text-slate-400">MQ2 (Propane)</label>
+                  <input type="number" value={manualInput.mq2} onChange={e => setManualInput({ ...manualInput, mq2: e.target.value })} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white" />
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-400">MQ9 (CO)</label>
+                  <input type="number" value={manualInput.mq9} onChange={e => setManualInput({ ...manualInput, mq9: e.target.value })} className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white" />
+                </div>
               </div>
               <div className="flex gap-2 pt-1">
                 <button onClick={generateRandomManual} className="flex-1 bg-slate-700 hover:bg-slate-600 text-xs py-1 rounded text-slate-300">
                   <i className="fa-solid fa-shuffle mr-1"></i> Rnd
                 </button>
-                <button onClick={handleManualInject} className="flex-1 bg-purple-600 hover:bg-purple-500 text-xs py-1 rounded text-white font-bold">
-                  INJECT
+                <button onClick={classifyWithBackend} disabled={loadingClassify} className={`flex-1 ${loadingClassify ? 'bg-slate-700 text-slate-400' : 'bg-emerald-600 hover:bg-emerald-500'} text-xs py-1 rounded text-white font-bold`}>
+                  {loadingClassify ? 'CLASSIFYING…' : 'CLASSIFY VIA BACKEND'}
                 </button>
               </div>
+              {(classifyError || backendResult) && (
+                <div className="mt-2 text-xs">
+                  {classifyError && (
+                    <div className="text-red-400 bg-red-900/20 border border-red-800 px-2 py-1 rounded">{classifyError}</div>
+                  )}
+                  {backendResult && backendResult.ok && (
+                    <div className="bg-slate-900/40 border border-slate-700 mt-2 p-2 rounded text-slate-300">
+                      <div className="font-bold text-slate-200">Backend Prediction: <span className="text-white">{backendResult.prediction}</span></div>
+                      {backendResult.probabilities && (
+                        <div className="mt-1 grid grid-cols-2 gap-1">
+                          {Object.entries(backendResult.probabilities).map(([k, v]) => (
+                            <div key={k} className="flex justify-between text-[11px] bg-slate-800/70 px-2 py-1 rounded">
+                              <span className="text-slate-400">{k}</span>
+                              <span className="text-slate-200 font-mono">{(v * 100).toFixed(1)}%</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section>
+            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4 flex justify-between items-center">
+              Model Training
+              <span className="text-[10px] bg-slate-700 px-1 rounded text-blue-400">Backend</span>
+            </h3>
+            <div className="bg-slate-800/50 p-3 rounded border border-slate-700 space-y-2">
+              <div className="flex gap-2 pt-1">
+                <button onClick={trainModelWithBackend} disabled={trainingLoading} className={`flex-1 ${trainingLoading ? 'bg-slate-700 text-slate-400' : 'bg-blue-600 hover:bg-blue-500'} text-xs py-2 rounded text-white font-bold`}>
+                  {trainingLoading ? 'TRAINING…' : 'TRAIN MODEL'}
+                </button>
+              </div>
+              {(trainingError || trainingResp) && (
+                <div className="mt-2 text-xs">
+                  {trainingError && (
+                    <div className="text-red-400 bg-red-900/20 border border-red-800 px-2 py-1 rounded">{trainingError}</div>
+                  )}
+                  {trainingResp && trainingResp.ok && (
+                    <div className="bg-slate-900/40 border border-slate-700 mt-2 p-2 rounded text-slate-300 space-y-2">
+                      <div className="flex justify-between">
+                        <span className="text-slate-400">Model Ready</span>
+                        <span className={`font-bold ${trainingResp.model_ready ? 'text-emerald-400' : 'text-red-400'}`}>{trainingResp.model_ready ? 'YES' : 'NO'}</span>
+                      </div>
+                      {trainingResp.metrics && (
+                        <div className="grid grid-cols-3 gap-2">
+                          <div className="bg-slate-800/70 px-2 py-1 rounded">
+                            <div className="text-slate-400">Train</div>
+                            <div className="font-mono text-slate-200">{(trainingResp.metrics.train_score * 100).toFixed(1)}%</div>
+                          </div>
+                          <div className="bg-slate-800/70 px-2 py-1 rounded">
+                            <div className="text-slate-400">Test</div>
+                            <div className="font-mono text-slate-200">{(trainingResp.metrics.test_score * 100).toFixed(1)}%</div>
+                          </div>
+                          <div className="bg-slate-800/70 px-2 py-1 rounded">
+                            <div className="text-slate-400">Noisy</div>
+                            <div className="font-mono text-slate-200">{(trainingResp.metrics.noisy_score * 100).toFixed(1)}%</div>
+                          </div>
+                        </div>
+                      )}
+                      {trainingResp.samples && (
+                        <div className="flex justify-between text-slate-400">
+                          <span>Train Samples: <span className="text-slate-200">{trainingResp.samples.train}</span></span>
+                          <span>Test Samples: <span className="text-slate-200">{trainingResp.samples.test}</span></span>
+                        </div>
+                      )}
+                      {trainingResp.feature_names && (
+                        <div className="text-slate-400">
+                          Features: <span className="text-slate-200">{trainingResp.feature_names.join(', ')}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </section>
         </div>
@@ -355,7 +564,7 @@ export default function App() {
                     style={{ width: `${verdict.confidence}%` }}
                   ></div>
                 </div>
-                <div className="text-xs text-slate-400 mt-2 text-right">Model: {selectedModel.replace('_', ' ').toUpperCase()}</div>
+                <div className="text-xs text-slate-400 mt-2 text-right">Source: {backendResult?.ok ? 'BACKEND' : 'HEURISTIC'} • Model: {selectedModel.replace('_', ' ').toUpperCase()}</div>
               </div>
 
               <div className="absolute -right-10 -bottom-10 text-9xl opacity-5 pointer-events-none">
