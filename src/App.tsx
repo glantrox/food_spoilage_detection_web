@@ -606,7 +606,7 @@ export default function App() {
                   </div>
                   <span className="font-bold text-slate-600 text-sm">MQ4 (Metana)</span>
                 </div>
-                <div className="text-3xl font-bold text-slate-800">{sensorData.mq4}</div>
+                <div className="text-3xl font-bold text-slate-800">{Math.floor(sensorData.mq4)}</div>
                 <div className="text-xs text-slate-400 mt-1">Gas hidrokarbon dasar</div>
               </div>
 
@@ -617,7 +617,7 @@ export default function App() {
                   </div>
                   <span className="font-bold text-slate-600 text-sm">MQ8 (Hidrogen)</span>
                 </div>
-                <div className="text-3xl font-bold text-slate-800">{sensorData.mq8}</div>
+                <div className="text-3xl font-bold text-slate-800">{Math.floor(sensorData.mq8)}</div>
                 <div className="text-xs text-slate-400 mt-1">Produk sampingan bakteri</div>
               </div>
 
@@ -628,7 +628,7 @@ export default function App() {
                   </div>
                   <span className="font-bold text-slate-600 text-sm">MQ135 (Air Q.)</span>
                 </div>
-                <div className="text-3xl font-bold text-slate-800">{sensorData.mq135}</div>
+                <div className="text-3xl font-bold text-slate-800">{Math.floor(sensorData.mq135)}</div>
                 <div className="text-xs text-slate-400 mt-1">Kualitas udara umum</div>
               </div>
 
